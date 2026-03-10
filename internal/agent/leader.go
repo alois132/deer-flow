@@ -8,6 +8,7 @@ import (
 	"github.com/alois132/deer-flow/internal/global"
 	"github.com/alois132/deer-flow/pkg/llm"
 	"github.com/alois132/deer-flow/pkg/log/zlog"
+	"github.com/alois132/deer-flow/pkg/sandbox"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/prompt"
@@ -24,17 +25,20 @@ const (
 )
 
 type Leader struct {
-	agent  adk.Agent
-	memory *memory.Service
+	agent    adk.Agent
+	memory   *memory.Service
+	provider sandbox.Provider
 }
 
 type Session struct {
-	ThreadID string `json:"thread_id"`
-	UserID   string `json:"user_id"`
-	Memory   *memory.Memory
+	ThreadID  string `json:"thread_id"`
+	UserID    string `json:"user_id"`
+	SandboxID string `json:"sandbox_id"`
+	Provider  sandbox.Provider
+	Memory    *memory.Memory
 }
 
-func NewLeaderByConfig(ctx context.Context, cache *redis.Client, cfg global.AgentConfig) (*Leader, error) {
+func NewLeaderByConfig(ctx context.Context, cache *redis.Client, sandboxProvider sandbox.Provider, cfg global.AgentConfig) (*Leader, error) {
 	defaultLLM, err := llm.InitLLM(ctx, cfg.DefaultLLM)
 	if err != nil {
 		return nil, err
@@ -47,7 +51,83 @@ func NewLeaderByConfig(ctx context.Context, cache *redis.Client, cfg global.Agen
 		}
 	}
 	mem := memory.NewService(cache, memoryLLM)
-	return NewLeader(ctx, defaultLLM, mem)
+	return NewLeader(ctx, defaultLLM, mem, sandboxProvider)
+}
+
+func NewLeader(ctx context.Context, llm model.ToolCallingChatModel, mem *memory.Service, sandboxProvider sandbox.Provider) (*Leader, error) {
+	config, infos, err := GetToolsConfig()
+	if err != nil {
+		return nil, err
+	}
+	llm, err = llm.WithTools(infos)
+	if err != nil {
+		return nil, err
+	}
+	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		Name:          "deer flow",
+		Description:   "An agent is able to do anything",
+		Instruction:   Prompt,
+		Model:         llm,
+		ToolsConfig:   config,
+		GenModelInput: genInput,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	a := &Leader{
+		agent:    agent,
+		memory:   mem,
+		provider: sandboxProvider,
+	}
+
+	return a, nil
+}
+
+// before agent
+func (l *Leader) Start(ctx context.Context, userID, threadID string) (context.Context, []adk.AgentRunOption, error) {
+	// 初始化会话
+	newCtx, session := InitCtx(ctx)
+
+	// 初始化沙盒
+	sandboxID, err := l.startSandbox(ctx, threadID)
+	if err != nil {
+		zlog.CtxErrorf(ctx, "start sandbox error: %v", err)
+		return nil, nil, err
+	}
+
+	// 获取记忆
+	mem, err := l.memory.GetMemory(ctx, userID, threadID)
+
+	if err != nil {
+		zlog.CtxErrorf(ctx, "build memory context error: %v", err)
+		return nil, nil, err
+	}
+
+	// 保持会话值
+	session.UserID = userID
+	session.ThreadID = threadID
+	session.Memory = mem
+	session.SandboxID = sandboxID
+	session.Provider = l.provider
+
+	// 这个会话是eino的，封闭
+	var opts []adk.AgentRunOption
+	//sessionValue := map[string]any{
+	//	"user_id":              userID,
+	//	"thread_id":            threadID,
+	//	"memory_context":       memoryContext,
+	//	"subagent_thinking":    "",
+	//	"skills_section":       "",
+	//	"subagent_section":     "",
+	//	"subagent_reminder":    "",
+	//	"clarification_system": "",
+	//	"work_directory":       "",
+	//}
+	//
+	//opt := adk.WithSessionValues(sessionValue)
+	//opts = append(opts, opt)
+	return newCtx, opts, nil
 }
 
 func genInput(ctx context.Context, instruction string, input *adk.AgentInput) ([]adk.Message, error) {
@@ -73,7 +153,7 @@ func genInput(ctx context.Context, instruction string, input *adk.AgentInput) ([
 			"subagent_section":     "",
 			"subagent_reminder":    "",
 			"clarification_system": "",
-			"work_directory":       "",
+			"work_directory":       getFileSystemContext(ctx),
 		}
 		ct := prompt.FromMessages(schema.FString, sp)
 		ms, err := ct.Format(ctx, vs)
@@ -94,25 +174,6 @@ func genInput(ctx context.Context, instruction string, input *adk.AgentInput) ([
 	return msgs, nil
 }
 
-func NewLeader(ctx context.Context, llm model.ToolCallingChatModel, mem *memory.Service) (*Leader, error) {
-	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
-		Name:          "deer flow",
-		Description:   "An agent is able to do anything",
-		Instruction:   Prompt,
-		Model:         llm,
-		GenModelInput: genInput,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	a := &Leader{
-		agent:  agent,
-		memory: mem,
-	}
-
-	return a, nil
-}
 func (l *Leader) BuildMemoryContext(ctx context.Context, userID, threadID string) (*memory.Memory, error) {
 	mem, err := l.memory.GetMemory(ctx, userID, threadID)
 	if err != nil {
@@ -138,7 +199,20 @@ func getMemoryContext(ctx context.Context, mem *memory.Memory) (string, error) {
 	return fString, nil
 }
 
+func getFileSystemContext(ctx context.Context) string {
+	return "<working_directory existed=\"true\">\n- User uploads: `/mnt/user-data/uploads` - Files uploaded by the user (automatically listed in context)\n- User workspace: `/mnt/user-data/workspace` - Working directory for temporary files\n- Output files: `/mnt/user-data/outputs` - Final deliverables must be saved here\n\n**File Management:**\n- Uploaded files are automatically listed in the <uploaded_files> section before each request\n- Use `read_file` tool to read uploaded files using their paths from the list\n- For PDF, PPT, Excel, and Word files, converted Markdown versions (*.md) are available alongside originals\n- All temporary work happens in `/mnt/user-data/workspace`\n- Final deliverables must be copied to `/mnt/user-data/outputs` and presented using `present_file` tool\n</working_directory>"
+}
+
 // 之后都要用新的ctx
+func (l *Leader) startSandbox(ctx context.Context, threadID string) (string, error) {
+	sandboxID, err := l.provider.Acquire(ctx, threadID)
+	if err != nil {
+		zlog.CtxErrorf(ctx, "acquire sandbox error: %v", err)
+		return "", err
+	}
+	zlog.CtxInfof(ctx, "thread(%s) sandbox acquired: %s", threadID, sandboxID)
+	return sandboxID, nil
+}
 
 func (l *Leader) Run(ctx context.Context, userID, threadID string, messages []*schema.Message) (context.Context, *adk.AsyncIterator[*adk.AgentEvent], error) {
 	newCtx, opts, err := l.Start(ctx, userID, threadID)
@@ -153,42 +227,6 @@ func (l *Leader) Run(ctx context.Context, userID, threadID string, messages []*s
 	iterator := l.agent.Run(newCtx, adkMessages, opts...)
 
 	return newCtx, iterator, nil
-}
-
-func (l *Leader) Start(ctx context.Context, userID, threadID string) (context.Context, []adk.AgentRunOption, error) {
-	// 初始化会话
-	newCtx, session := InitCtx(ctx)
-
-	// 获取记忆
-	mem, err := l.memory.GetMemory(ctx, userID, threadID)
-
-	if err != nil {
-		zlog.CtxErrorf(ctx, "build memory context error: %v", err)
-		return nil, nil, err
-	}
-
-	// 保持会话值
-	session.UserID = userID
-	session.ThreadID = threadID
-	session.Memory = mem
-
-	// 这个会话是eino的，封闭
-	var opts []adk.AgentRunOption
-	//sessionValue := map[string]any{
-	//	"user_id":              userID,
-	//	"thread_id":            threadID,
-	//	"memory_context":       memoryContext,
-	//	"subagent_thinking":    "",
-	//	"skills_section":       "",
-	//	"subagent_section":     "",
-	//	"subagent_reminder":    "",
-	//	"clarification_system": "",
-	//	"work_directory":       "",
-	//}
-	//
-	//opt := adk.WithSessionValues(sessionValue)
-	//opts = append(opts, opt)
-	return newCtx, opts, nil
 }
 
 func (l *Leader) Close(ctx context.Context, output []*schema.Message) error {

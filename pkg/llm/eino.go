@@ -3,8 +3,8 @@ package llm
 import (
 	"context"
 	"errors"
+	"github.com/alois132/deer-flow/pkg/llm/openai"
 	"github.com/cloudwego/eino-ext/components/model/ark"
-	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/prompt"
 	"github.com/cloudwego/eino/schema"
@@ -26,10 +26,10 @@ func InitLLM(ctx context.Context, cfg *Config) (llm model.ToolCallingChatModel, 
 		})
 	case ProviderOpenAI:
 		llm, err = openai.NewChatModel(ctx, &openai.ChatModelConfig{
-			APIKey:          cfg.APIKey,
-			Model:           cfg.Model,
-			BaseURL:         cfg.BaseURL,
-			ReasoningEffort: openai.ReasoningEffortLevelHigh,
+			APIKey:  cfg.APIKey,
+			Model:   cfg.Model,
+			BaseURL: cfg.BaseURL,
+			//ReasoningEffort: openai.ReasoningEffortLevelHigh,
 		})
 	}
 

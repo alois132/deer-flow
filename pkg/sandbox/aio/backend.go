@@ -45,7 +45,24 @@ type LocalSandboxBackend struct {
 	client          *http.Client
 }
 
-func (l *LocalSandboxBackend) deleteRuntime() ContainerRuntime {
+func WaitForSandboxReady(ctx context.Context, sandboxURL string, timeout time.Duration) (bool, error) {
+	cli := http.DefaultClient
+	endTime := time.Now().Add(timeout)
+	for time.Now().Before(endTime) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, sandboxURL, nil)
+		if err != nil {
+			return false, err
+		}
+		resp, err := cli.Do(req)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			return true, nil
+		}
+		time.Sleep(1 * time.Second)
+	}
+	return false, fmt.Errorf("timeout waiting for sandbox to be ready")
+}
+
+func deleteRuntime() ContainerRuntime {
 	// 只在 macOS 上检测 Apple Container
 	if runtime.GOOS == "darwin" {
 		// 创建带超时的上下文（5秒）
@@ -97,6 +114,16 @@ func (l *LocalSandboxBackend) startContainer(ctx context.Context, containerName 
 		}
 		cmd = append(cmd, "-v", mountSpec)
 	}
+	for _, m := range extraMounts {
+		mountSpec := fmt.Sprintf("%s:%s",
+			m.HostPath,
+			m.ContainerPath)
+		if m.ReadOnly {
+			mountSpec += ":ro"
+		}
+		cmd = append(cmd, "-v", mountSpec)
+	}
+
 	cmd = append(cmd, l.image)
 	zlog.CtxInfof(ctx, "启动容器, cmd:%v", cmd)
 	eCmd := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
@@ -163,22 +190,6 @@ func (l *LocalSandboxBackend) getContainerPort(ctx context.Context, containerNam
 	return port, nil
 }
 
-func (l *LocalSandboxBackend) waitForSandboxReady(ctx context.Context, sandboxURL string, timeout time.Duration) (bool, error) {
-	endTime := time.Now().Add(timeout)
-	for time.Now().Before(endTime) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, sandboxURL, nil)
-		if err != nil {
-			return false, err
-		}
-		resp, err := l.client.Do(req)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			return true, nil
-		}
-		time.Sleep(1 * time.Second)
-	}
-	return false, fmt.Errorf("timeout waiting for sandbox to be ready")
-}
-
 func (l *LocalSandboxBackend) Create(ctx context.Context, threadID string, sandboxID string, extraMounts []*sandbox.VolumeMount) (*SandboxInfo, error) {
 	containerName := l.containerPrefix + "-" + sandboxID
 	port, err := safe.GetFreePort(l.port, 100)
@@ -227,7 +238,7 @@ func (l *LocalSandboxBackend) Discover(ctx context.Context, sandboxID string) (*
 		return nil, err
 	}
 	sandboxURL := fmt.Sprintf("http://localhost:%d", port)
-	ready, err := l.waitForSandboxReady(ctx, sandboxURL, 5*time.Second)
+	ready, err := WaitForSandboxReady(ctx, sandboxURL, 5*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -375,6 +386,12 @@ func NewRemoteSandboxBackend(provisionerURL string, client *safe.HttpClient) San
 }
 
 func NewLocalSandboxBackend(image string, port int, containerPrefix string, mounts []*sandbox.VolumeMount, Environment map[string]string) SandboxBackend {
+	if image == "" {
+		image = DEFAULT_IMAGE
+	}
+	if port == 0 {
+		port = DEFAULT_PORT
+	}
 	return &LocalSandboxBackend{
 		image:           image,
 		port:            port,
@@ -382,5 +399,6 @@ func NewLocalSandboxBackend(image string, port int, containerPrefix string, moun
 		mounts:          mounts,
 		environment:     Environment,
 		client:          http.DefaultClient,
+		runtime:         deleteRuntime(),
 	}
 }

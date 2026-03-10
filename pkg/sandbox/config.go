@@ -11,6 +11,12 @@ type Config struct {
 	Environment     map[string]string      `mapstructure:"environment"`
 	Extra           map[string]interface{} `mapstructure:"extra"`
 	BaseDir         string                 `mapstructure:"base_dir"`
+	Skills          Skills                 `mapstructure:"skills"`
+}
+
+type Skills struct {
+	Path          string `mapstructure:"path"`
+	ContainerPath string `mapstructure:"container_path"`
 }
 
 type VolumeMount struct {
