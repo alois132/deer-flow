@@ -1,0 +1,46 @@
+# 通用环境
+
+networks:
+  deerflow:
+    driver: bridge
+
+services:
+  #mysql环境# https://github.com/bitnami/containers/tree/main/bitnami/mysql#how-to-use-this-image
+  mysql:
+    image: bitnami/mysql:8.0
+    container_name: deerflow-mysql
+    hostname: mysql
+    privileged: true
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_DATABASE: deerflow
+      TZ: Asia/Shanghai
+      # 这里123456改成自己的密码
+      MYSQL_ROOT_PASSWORD: "123456"
+    volumes:
+      - "./data/mysql/data:/bitnami/mysql/data"
+      - "./data/mysql/conf:/opt/bitnami/mysql/conf"
+    networks:
+      - deerflow
+    healthcheck:
+      test: [ 'CMD', '/opt/bitnami/scripts/mysql/healthcheck.sh' ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  #redis环境 # https://github.com/bitnami/containers/tree/main/bitnami/redis
+  redis:
+    image: bitnami/redis:7.0
+    container_name: deerflow-redis
+    hostname: redis
+    privileged: true
+    environment:
+      - REDIS_PASSWORD="123456"
+    ports:
+      - "6379:6379"
+    volumes:
+      - "./data/redis/data:/bitnami/redis/data"
+      - "./data/redis/conf:/opt/bitnami/redis/etc"
+    networks:
+      - deerflow
