@@ -1,0 +1,60 @@
+server:
+  port: 8080
+  mode: dev
+  read_timeout: 30
+  write_timeout: 30
+
+database:
+  master:
+    driver: mysql
+    host: localhost
+    port: 3306
+    username: root
+    password: "123456"
+    db_name: deerflow
+  # slavers:
+  #   - driver: postgres
+  #     host: localhost
+  #     port: 5433
+  #     username: postgres
+  #     password: password
+  #     db_name: deerflow
+
+redis:
+  host: localhost
+  port: 6379
+  password: "123456"
+  db: 0
+
+log:
+  mode: dev
+  logfile_path: ./logs/
+
+agent:
+  default_llm: #没配置的llm默认使用的配置
+    provider: openai
+    api_key: sk-xxx
+    model: kimi-k2.5
+    base_url: https://api.moonshot.cn/v1 #使用ark时，该选项无效
+  memory_llm:
+    provider: openai
+    api_key: sk-xxx
+    model: kimi-k2.5
+    base_url: https://api.moonshot.cn/v1 #使用ark时，该选项无效
+
+sandbox:
+#  image: enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest
+#  port: 8080
+  auto_start: true
+  container_prefix: deer-flow-
+  idle_timeout: 3600
+#  mounts:
+  environment:
+    TZ: Asia/Shanghai
+#  extra:
+#    memory_limit: 512m
+#    cpu_limit: "0.5"
+  base_dir: ./
+  skills:
+    path: ./skills
+    container_path: /mnt/skills
