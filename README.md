@@ -196,5 +196,6 @@ MIT License
 
 ## 致谢
 
+- [Deer Flow](https://github.com/bytedance/deer-flow) - 原创项目
 - [CloudWeGo Eino](https://github.com/cloudwego/eino) - 强大的 Go 语言 LLM 应用框架
 - [Agent Infra](https://github.com/agent-infra) - 沙箱基础设施
