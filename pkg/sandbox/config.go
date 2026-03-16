@@ -15,8 +15,13 @@ type Config struct {
 }
 
 type Skills struct {
-	Path          string `mapstructure:"path"`
-	ContainerPath string `mapstructure:"container_path"`
+	Path                string   `mapstructure:"path"`
+	ContainerPath       string   `mapstructure:"container_path"`
+	Enabled             *bool    `mapstructure:"enabled"`
+	Mount               *bool    `mapstructure:"mount"`
+	Sync                *bool    `mapstructure:"sync"`
+	Clean               *bool    `mapstructure:"clean"`
+	AllowedInterpreters []string `mapstructure:"allowed_interpreters"`
 }
 
 type VolumeMount struct {

@@ -58,3 +58,12 @@ sandbox:
   skills:
     path: ./skills
     container_path: /mnt/skills
+    enabled: true
+    mount: true
+    sync: true
+    clean: false
+    allowed_interpreters:
+      - bash
+      - sh
+      - python
+      - python3

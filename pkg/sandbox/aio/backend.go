@@ -75,7 +75,7 @@ func deleteRuntime() ContainerRuntime {
 
 		if err == nil {
 			version := strings.TrimSpace(string(output))
-			zlog.Infof("检测到 Apple Container", "version", version)
+			zlog.Infof("检测到 Apple Container, version=%s", version)
 			return RuntimeAppleContainer
 		}
 
@@ -85,7 +85,7 @@ func deleteRuntime() ContainerRuntime {
 		} else if execErr, ok := err.(*exec.Error); ok && execErr.Err == exec.ErrNotFound {
 			zlog.Infof("Apple Container 未安装，回退到 Docker")
 		} else {
-			zlog.Infof("Apple Container 不可用，回退到 Docker", "error", err)
+			zlog.Infof("Apple Container 不可用，回退到 Docker, error=%v", err)
 		}
 	}
 

@@ -26,6 +26,7 @@ import (
 )
 
 func TestEmbedStrings(t *testing.T) {
+	requireMockeyTests(t)
 
 	ctx := context.Background()
 

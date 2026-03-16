@@ -95,6 +95,15 @@ func (l *Leader) Start(ctx context.Context, userID, threadID string) (context.Co
 		zlog.CtxErrorf(ctx, "start sandbox error: %v", err)
 		return nil, nil, err
 	}
+	sb, err := l.provider.Get(ctx, sandboxID)
+	if err != nil {
+		zlog.CtxErrorf(ctx, "get sandbox error: %v", err)
+		return nil, nil, err
+	}
+	if err := syncSkillsToSandbox(ctx, sb); err != nil {
+		zlog.CtxErrorf(ctx, "sync skills to sandbox error: %v", err)
+		return nil, nil, err
+	}
 
 	// 获取记忆
 	mem, err := l.memory.GetMemory(ctx, userID, threadID)
@@ -149,7 +158,7 @@ func genInput(ctx context.Context, instruction string, input *adk.AgentInput) ([
 		vs := map[string]any{
 			"memory_context":       memoryContext,
 			"subagent_thinking":    "",
-			"skills_section":       "",
+			"skills_section":       buildSkillsSection(global.GetCfg()),
 			"subagent_section":     "",
 			"subagent_reminder":    "",
 			"clarification_system": "",
@@ -235,6 +244,17 @@ func (l *Leader) Close(ctx context.Context, output []*schema.Message) error {
 		return err
 	}
 
+	if session.Provider != nil && session.SandboxID != "" {
+		sb, err := session.Provider.Get(ctx, session.SandboxID)
+		if err != nil {
+			zlog.CtxErrorf(ctx, "get sandbox error: %v", err)
+			return err
+		}
+		if err := syncSkillsFromSandbox(ctx, sb); err != nil {
+			zlog.CtxErrorf(ctx, "sync skills from sandbox error: %v", err)
+			return err
+		}
+	}
 	// 更新记忆
 	err = l.memory.GenMemory(ctx, session.UserID, session.ThreadID, session.Memory, output)
 	if err != nil {

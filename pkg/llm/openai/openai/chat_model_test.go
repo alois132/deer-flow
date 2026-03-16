@@ -33,6 +33,8 @@ import (
 )
 
 func TestStream(t *testing.T) {
+	requireMockeyTests(t)
+
 	t.Run("stream applies RequestPayloadModifier", func(t *testing.T) {
 		// mock CreateChatCompletionStream to validate options carry payload modifier
 		defer mockey.Mock((*openai.Client).CreateChatCompletionStream).To(func(ctx context.Context,
@@ -127,6 +129,8 @@ func TestStream(t *testing.T) {
 }
 
 func TestGenerate(t *testing.T) {
+	requireMockeyTests(t)
+
 	t.Run("payload and response modifiers", func(t *testing.T) {
 		c := &Client{config: &Config{Model: "test-model"}}
 		conf := openai.DefaultConfig("dummy-key")
@@ -321,6 +325,8 @@ func TestLogProbs(t *testing.T) {
 }
 
 func TestToTools(t *testing.T) {
+	requireMockeyTests(t)
+
 	mockey.PatchConvey("", t, func() {
 		mockTools := []*schema.ToolInfo{
 			{
@@ -374,6 +380,8 @@ func TestToTools(t *testing.T) {
 }
 
 func TestBuildMessages(t *testing.T) {
+	requireMockeyTests(t)
+
 	t.Run("buildMessageFromAssistantGenMultiContent", func(t *testing.T) {
 		t.Run("success with audio", func(t *testing.T) {
 			mockey.PatchConvey("mock GetMessageOutputAudioID", t, func() {
@@ -506,6 +514,8 @@ func TestBuildMessages(t *testing.T) {
 }
 
 func TestBuildMessageFromUserInputMultiContent(t *testing.T) {
+	requireMockeyTests(t)
+
 	mockey.PatchConvey("TestBuildMessageFromUserInputMultiContent", t, func() {
 		base64Data := "base64data"
 		text := "hello"

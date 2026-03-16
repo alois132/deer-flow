@@ -9,6 +9,8 @@ import (
 	"github.com/agent-infra/sandbox-sdk-go/option"
 	"github.com/alois132/deer-flow/pkg/sandbox"
 	"github.com/alois132/deer-flow/utils/safe"
+	"io"
+	"os"
 	"strings"
 )
 
@@ -108,6 +110,46 @@ func (s *Sandbox) UpdateFile(ctx context.Context, path string, content string) e
 	req.SetContent(toString)
 	req.SetFile(path)
 	_, err := s.aioClient.File.WriteFile(ctx, req)
+	return err
+}
+
+func (s *Sandbox) UploadFile(ctx context.Context, localPath string, remotePath string) error {
+	file, err := os.Open(localPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	req := &api.BodyUploadFile{
+		File: file,
+	}
+	if remotePath != "" {
+		req.Path = &remotePath
+	}
+	resp, err := s.aioClient.File.UploadFile(ctx, req)
+	if err != nil {
+		return err
+	}
+	if resp == nil || resp.GetSuccess() == nil || !safe.Value(resp.GetSuccess()) {
+		return fmt.Errorf("upload file failed: %s", localPath)
+	}
+	return nil
+}
+
+func (s *Sandbox) DownloadFile(ctx context.Context, remotePath string, localPath string) error {
+	req := new(api.FileDownloadFileRequest)
+	req.SetPath(remotePath)
+	reader, err := s.aioClient.File.DownloadFile(ctx, req)
+	if err != nil {
+		return err
+	}
+	file, err := os.Create(localPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	_, err = io.Copy(file, reader)
 	return err
 }
 

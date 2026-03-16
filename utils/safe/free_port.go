@@ -53,7 +53,8 @@ func (pa *PortAllocator) Release(port int) {
 
 // isPortFree 检查系统层面端口是否可用
 func (pa *PortAllocator) isPortFree(port int) bool {
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	// Check wildcard bind to match Docker's 0.0.0.0 port binding behavior.
+	addr := fmt.Sprintf(":%d", port)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return false

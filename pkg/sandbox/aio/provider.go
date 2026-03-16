@@ -131,6 +131,9 @@ func (p *Provider) getExtraMounts(ctx context.Context, threadID string) ([]*sand
 
 func (p *Provider) getSkillsMount(ctx context.Context) ([]*sandbox.VolumeMount, error) {
 	skills := p.cfg.Skills
+	if !isSkillsEnabled(skills) || !isSkillsMountEnabled(skills) {
+		return nil, nil
+	}
 	path := skills.Path
 	containerPath := skills.ContainerPath
 	abs, err := filepath.Abs(path)
@@ -147,9 +150,23 @@ func (p *Provider) getSkillsMount(ctx context.Context) ([]*sandbox.VolumeMount, 
 		{
 			ContainerPath: containerPath,
 			HostPath:      abs,
-			ReadOnly:      true,
+			ReadOnly:      false,
 		},
 	}, nil
+}
+
+func isSkillsEnabled(skills sandbox.Skills) bool {
+	if skills.Enabled == nil {
+		return true
+	}
+	return *skills.Enabled
+}
+
+func isSkillsMountEnabled(skills sandbox.Skills) bool {
+	if skills.Mount == nil {
+		return true
+	}
+	return *skills.Mount
 }
 
 func (p *Provider) getThreadMounts(ctx context.Context, threadID string) ([]*sandbox.VolumeMount, error) {
@@ -209,7 +226,7 @@ func (p *Provider) tryRecover(ctx context.Context, threadID string) (string, err
 	p.mu.Lock()
 	p.sandboxes[info.SandboxID] = sandbox
 	p.sandboxInfos[info.SandboxID] = dis
-	p.lastActivity[threadID] = time.Now()
+	p.lastActivity[info.SandboxID] = time.Now()
 	p.threadSandboxes[threadID] = dis.SandboxID
 	p.mu.Unlock()
 
@@ -306,9 +323,9 @@ func (p *Provider) Release(ctx context.Context, sandboxID string) error {
 	delete(p.sandboxes, sandboxID)
 	info = p.sandboxInfos[sandboxID]
 	delete(p.sandboxInfos, sandboxID)
-	for _, id := range p.threadSandboxes {
+	for threadID, id := range p.threadSandboxes {
 		if id == sandboxID {
-			threadIDs = append(threadIDs, p.threadSandboxes[id])
+			threadIDs = append(threadIDs, threadID)
 		}
 	}
 	for _, id := range threadIDs {

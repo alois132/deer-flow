@@ -7,6 +7,8 @@ import (
 	"github.com/alois132/deer-flow/pkg/log/zlog"
 	"github.com/alois132/deer-flow/pkg/sandbox/aio"
 	"github.com/cloudwego/eino/schema"
+	"os"
+	"strings"
 )
 
 func main() {
@@ -22,8 +24,16 @@ func main() {
 		panic(err)
 	}
 
+	userID := strings.TrimSpace(os.Getenv("DEERFLOW_USER_ID"))
+	if userID == "" {
+		userID = "u_123456"
+	}
+	threadID := strings.TrimSpace(os.Getenv("DEERFLOW_THREAD_ID"))
+	if threadID == "" {
+		threadID = "t_123456"
+	}
 	messages := getMessages()
-	newCtx, iter, err := leader.Run(global.GetCtx(), "u_123456", "t_123456", messages)
+	newCtx, iter, err := leader.Run(global.GetCtx(), userID, threadID, messages)
 	if err != nil {
 		panic(err)
 	}
@@ -65,7 +75,11 @@ func main() {
 }
 
 func getMessages() []*schema.Message {
+	prompt := strings.TrimSpace(os.Getenv("DEERFLOW_PROMPT"))
+	if prompt == "" {
+		prompt = "请将tool工具都用一遍"
+	}
 	return []*schema.Message{
-		schema.UserMessage("请将tool工具都用一遍"),
+		schema.UserMessage(prompt),
 	}
 }

@@ -3,13 +3,17 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"github.com/alois132/deer-flow/internal/global"
 	"github.com/alois132/deer-flow/pkg/log/zlog"
 	"github.com/alois132/deer-flow/pkg/sandbox"
+	"github.com/alois132/deer-flow/pkg/skills"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
+	"path"
 	"strings"
 )
 
@@ -19,12 +23,18 @@ const (
 	ToolReadFile   = "read_file"
 	ToolWriteFile  = "write_file"
 	ToolStrReplace = "str_replace"
+	ToolReadSkill  = "read_skill"
+	ToolReadRef    = "read_reference"
+	ToolUseScript  = "use_script"
 
 	ToolBashDesc       = "Execute a bash command in a Linux environment.\n\n\n    - Use `python` to run Python code.\n    - Use `pip install` to install Python packages.\n\n    Args:\n        description: Explain why you are running this command in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.\n        command: The bash command to execute. Always use absolute paths for files and directories."
 	ToolLsDesc         = "List the contents of a directory up to 2 levels deep in tree format.\n\n    Args:\n        description: Explain why you are listing this directory in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.\n        path: The **absolute** path to the directory to list."
 	ToolReadFileDesc   = "Read the contents of a text file. Use this to examine source code, configuration files, logs, or any text-based file.\n\n    Args:\n        description: Explain why you are reading this file in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.\n        path: The **absolute** path to the file to read.\n        start_line: Optional starting line number (1-indexed, inclusive). Use with end_line to read a specific range.\n        end_line: Optional ending line number (1-indexed, inclusive). Use with start_line to read a specific range."
 	ToolWriteFileDesc  = "Write text content to a file.\n\n    Args:\n        description: Explain why you are writing to this file in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.\n        path: The **absolute** path to the file to write to. ALWAYS PROVIDE THIS PARAMETER SECOND.\n        content: The content to write to the file. ALWAYS PROVIDE THIS PARAMETER THIRD."
 	ToolStrReplaceDesc = "Replace a substring in a file with another substring.\n    If `replace_all` is False (default), the substring to replace must appear **exactly once** in the file.\n\n    Args:\n        description: Explain why you are replacing the substring in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.\n        path: The **absolute** path to the file to replace the substring in. ALWAYS PROVIDE THIS PARAMETER SECOND.\n        old_str: The substring to replace. ALWAYS PROVIDE THIS PARAMETER THIRD.\n        new_str: The new substring. ALWAYS PROVIDE THIS PARAMETER FOURTH.\n        replace_all: Whether to replace all occurrences of the substring. If False, only the first occurrence will be replaced. Default is False."
+	ToolReadSkillDesc  = "Read a skill definition from the skills directory.\n\n    Args:\n        description: Explain why you are reading this skill in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.\n        skill: The skill name (directory name under the skills root)."
+	ToolReadRefDesc    = "Read a reference file for a skill from the skills directory.\n\n    Args:\n        description: Explain why you are reading this reference in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.\n        skill: The skill name (directory name under the skills root).\n        reference: The reference file path relative to the skill's references directory."
+	ToolUseScriptDesc  = "Run a script for a skill using a specified interpreter.\n\n    Args:\n        description: Explain why you are running this script in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.\n        skill: The skill name (directory name under the skills root).\n        script: Script path. If only a filename is provided, it is resolved under the skill's scripts directory. If a relative path with a directory is provided (for example `eval-viewer/generate_review.py`), it is resolved from the skill root.\n        interpreter: Optional interpreter (e.g., bash, sh, python, python3). Defaults to bash.\n        args: Optional arguments passed to the script."
 )
 
 type BashArg struct {
@@ -50,6 +60,22 @@ type StrReplaceArg struct {
 	OldStr     string `json:"old_str"`
 	NewStr     string `json:"new_str"`
 	ReplaceAll bool   `json:"replace_all"`
+}
+
+type ReadSkillArg struct {
+	Skill string `json:"skill"`
+}
+
+type ReadReferenceArg struct {
+	Skill     string `json:"skill"`
+	Reference string `json:"reference"`
+}
+
+type UseScriptArg struct {
+	Skill       string `json:"skill"`
+	Script      string `json:"script"`
+	Interpreter string `json:"interpreter"`
+	Args        string `json:"args"`
 }
 
 func GetToolsConfig() (adk.ToolsConfig, []*schema.ToolInfo, error) {
@@ -203,6 +229,101 @@ func GetTools() (tools []tool.BaseTool, err error) {
 	}
 	tools = append(tools, strReplaceTool)
 
+	readSkillTool, err := utils.InferTool(ToolReadSkill, ToolReadSkillDesc, func(ctx context.Context, input ReadSkillArg) (output string, err error) {
+		cfg := global.GetCfg()
+		if cfg == nil || !skillsEnabledForTools(cfg.Sandbox.Skills) {
+			return "", fmt.Errorf("skills disabled")
+		}
+		skillName, err := sanitizeSkillName(input.Skill)
+		if err != nil {
+			return "", err
+		}
+		sb, err := ensureSandboxInitialized(ctx)
+		if err != nil {
+			return "", err
+		}
+		skillPath := path.Join(skillsContainerPath(), skillName, "SKILL.md")
+		content, err := sb.ReadFile(ctx, skillPath)
+		if errors.Is(err, sandbox.ErrNoData) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return content, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	tools = append(tools, readSkillTool)
+
+	readRefTool, err := utils.InferTool(ToolReadRef, ToolReadRefDesc, func(ctx context.Context, input ReadReferenceArg) (output string, err error) {
+		cfg := global.GetCfg()
+		if cfg == nil || !skillsEnabledForTools(cfg.Sandbox.Skills) {
+			return "", fmt.Errorf("skills disabled")
+		}
+		skillName, err := sanitizeSkillName(input.Skill)
+		if err != nil {
+			return "", err
+		}
+		refPath, err := normalizeSkillSubPath(input.Reference, "references")
+		if err != nil {
+			return "", err
+		}
+		sb, err := ensureSandboxInitialized(ctx)
+		if err != nil {
+			return "", err
+		}
+		fullPath := path.Join(skillsContainerPath(), skillName, "references", refPath)
+		content, err := sb.ReadFile(ctx, fullPath)
+		if errors.Is(err, sandbox.ErrNoData) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return content, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	tools = append(tools, readRefTool)
+
+	useScriptTool, err := utils.InferTool(ToolUseScript, ToolUseScriptDesc, func(ctx context.Context, input UseScriptArg) (output string, err error) {
+		cfg := global.GetCfg()
+		if cfg == nil || !skillsEnabledForTools(cfg.Sandbox.Skills) {
+			return "", fmt.Errorf("skills disabled")
+		}
+		skillName, err := sanitizeSkillName(input.Skill)
+		if err != nil {
+			return "", err
+		}
+		scriptPath, err := resolveSkillScriptPath(input.Script)
+		if err != nil {
+			return "", err
+		}
+		interpreter, err := sanitizeInterpreter(input.Interpreter)
+		if err != nil {
+			return "", err
+		}
+		sb, err := ensureSandboxInitialized(ctx)
+		if err != nil {
+			return "", err
+		}
+		skillRoot := path.Join(skillsContainerPath(), skillName)
+		fullPath := path.Join(skillRoot, scriptPath)
+		cmd := buildSkillScriptCommand(skillRoot, fullPath, interpreter, input.Args)
+		executeCommand, err := sb.ExecuteCommand(ctx, cmd)
+		if err != nil {
+			return "", err
+		}
+		return executeCommand, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	tools = append(tools, useScriptTool)
+
 	return tools, nil
 }
 
@@ -221,4 +342,124 @@ func ensureSandboxInitialized(ctx context.Context) (sandbox.Sandbox, error) {
 		return p.Get(ctx, sandboxID)
 	}
 	return s, nil
+}
+
+func skillsContainerPath() string {
+	cfg := global.GetCfg()
+	if cfg == nil {
+		return skills.DefaultContainerPath
+	}
+	if !skillsEnabledForTools(cfg.Sandbox.Skills) {
+		return skills.DefaultContainerPath
+	}
+	if strings.TrimSpace(cfg.Sandbox.Skills.ContainerPath) == "" {
+		return skills.DefaultContainerPath
+	}
+	return cfg.Sandbox.Skills.ContainerPath
+}
+
+func skillsEnabledForTools(cfg sandbox.Skills) bool {
+	if cfg.Enabled == nil {
+		return true
+	}
+	return *cfg.Enabled
+}
+
+func sanitizeSkillName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("skill name is required")
+	}
+	if strings.Contains(name, "..") || strings.ContainsAny(name, "/\\") {
+		return "", fmt.Errorf("invalid skill name: %s", name)
+	}
+	return name, nil
+}
+
+func sanitizeRelativePath(rel string) (string, error) {
+	rel = strings.TrimSpace(rel)
+	if rel == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	clean := path.Clean(rel)
+	if strings.HasPrefix(clean, "/") || clean == "." || clean == ".." {
+		return "", fmt.Errorf("invalid path: %s", rel)
+	}
+	if strings.Contains(clean, "..") {
+		return "", fmt.Errorf("invalid path: %s", rel)
+	}
+	return clean, nil
+}
+
+func normalizeSkillSubPath(rel, parent string) (string, error) {
+	clean, err := sanitizeRelativePath(rel)
+	if err != nil {
+		return "", err
+	}
+	parent = strings.Trim(strings.TrimSpace(parent), "/")
+	if parent == "" {
+		return clean, nil
+	}
+	prefix := parent + "/"
+	if clean == parent {
+		return "", fmt.Errorf("invalid path: %s", rel)
+	}
+	if strings.HasPrefix(clean, prefix) {
+		clean = strings.TrimPrefix(clean, prefix)
+	}
+	if strings.TrimSpace(clean) == "" {
+		return "", fmt.Errorf("invalid path: %s", rel)
+	}
+	return clean, nil
+}
+
+func resolveSkillScriptPath(script string) (string, error) {
+	clean, err := sanitizeRelativePath(script)
+	if err != nil {
+		return "", err
+	}
+	if strings.Contains(clean, "/") {
+		return clean, nil
+	}
+	return path.Join("scripts", clean), nil
+}
+
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func buildSkillScriptCommand(skillRoot, scriptPath, interpreter, args string) string {
+	cmd := fmt.Sprintf("%s %s", interpreter, shellQuote(scriptPath))
+	if interpreter == "python" || interpreter == "python3" {
+		cmd = fmt.Sprintf("PYTHONPATH=%s %s %s", shellQuote(skillRoot), interpreter, shellQuote(scriptPath))
+	}
+	if strings.TrimSpace(args) != "" {
+		cmd += " " + args
+	}
+	return cmd
+}
+
+func sanitizeInterpreter(interpreter string) (string, error) {
+	interpreter = strings.TrimSpace(interpreter)
+	if interpreter == "" {
+		interpreter = "bash"
+	}
+	allowed := allowedInterpreters()
+	for _, item := range allowed {
+		if interpreter == item {
+			return interpreter, nil
+		}
+	}
+	return "", fmt.Errorf("interpreter not allowed: %s", interpreter)
+}
+
+func allowedInterpreters() []string {
+	cfg := global.GetCfg()
+	if cfg != nil && len(cfg.Sandbox.Skills.AllowedInterpreters) > 0 {
+		return cfg.Sandbox.Skills.AllowedInterpreters
+	}
+	return []string{"bash", "sh", "python", "python3"}
 }
