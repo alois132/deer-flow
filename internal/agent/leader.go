@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
 	"github.com/alois132/deer-flow/internal/agent/memory"
 	"github.com/alois132/deer-flow/internal/global"
 	"github.com/alois132/deer-flow/pkg/llm"
@@ -12,6 +13,7 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/prompt"
+	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"github.com/redis/go-redis/v9"
 )
@@ -21,6 +23,9 @@ const (
 )
 
 const (
+	defaultSubagentName        = "general_subagent"
+	defaultSubagentDescription = "General-purpose worker agent for delegated tasks."
+
 	Prompt = "<role>\nYou are DeerFlow 2.0, an open-source super agent.\n</role>\n\n{memory_context}\n\n<thinking_style>\n- Think concisely and strategically about the user's request BEFORE taking action\n- Break down the task: What is clear? What is ambiguous? What is missing?\n- **PRIORITY CHECK: If anything is unclear, missing, or has multiple interpretations, you MUST ask for clarification FIRST - do NOT proceed with work**\n{subagent_thinking}- Never write down your full final answer or report in thinking process, but only outline\n- CRITICAL: After thinking, you MUST provide your actual response to the user. Thinking is for planning, the response is for delivery.\n- Your response must contain the actual answer, not just a reference to what you thought about\n</thinking_style>\n\n{clarification_system}\n\n{skills_section}\n\n{subagent_section}\n\n{work_directory}\n\n<response_style>\n- Clear and Concise: Avoid over-formatting unless requested\n- Natural Tone: Use paragraphs and prose, not bullet points by default\n- Action-Oriented: Focus on delivering results, not explaining processes\n</response_style>\n\n<citations>\n- When to Use: After web_search, include citations if applicable\n- Format: Use Markdown link format `[citation:TITLE](URL)`\n- Example: \n```markdown\nThe key AI trends for 2026 include enhanced reasoning capabilities and multimodal integration\n[citation:AI Trends 2026](https://techcrunch.com/ai-trends).\nRecent breakthroughs in language models have also accelerated progress\n[citation:OpenAI Research](https://openai.com/research).\n```\n</citations>\n\n<critical_reminders>\n- **Clarification First**: ALWAYS clarify unclear/missing/ambiguous requirements BEFORE starting work - never assume or guess\n{subagent_reminder}- Skill First: Always load the relevant skill before starting **complex** tasks.\n- Progressive Loading: Load resources incrementally as referenced in skills\n- Output Files: Final deliverables must be in `/mnt/user-data/outputs`\n- Clarity: Be direct and helpful, avoid unnecessary meta-commentary\n- Including Images and Mermaid: Images and Mermaid diagrams are always welcomed in the Markdown format, and you're encouraged to use `![Image Description](image_path)\\n\\n` or \"```mermaid\" to display images in response or Markdown files\n- Multi-task: Better utilize parallel tool calling to call multiple tools at one time for better performance\n- Language Consistency: Keep using the same language as user's\n- Always Respond: Your thinking is internal. You MUST always provide a visible response to the user after thinking.\n</critical_reminders>"
 )
 
@@ -55,11 +60,40 @@ func NewLeaderByConfig(ctx context.Context, cache *redis.Client, sandboxProvider
 }
 
 func NewLeader(ctx context.Context, llm model.ToolCallingChatModel, mem *memory.Service, sandboxProvider sandbox.Provider) (*Leader, error) {
-	config, infos, err := GetToolsConfig()
+	baseToolsConfig, baseToolsInfo, err := GetToolsConfig()
 	if err != nil {
 		return nil, err
 	}
-	llm, err = llm.WithTools(infos)
+
+	subagentModel, err := llm.WithTools(baseToolsInfo)
+	if err != nil {
+		return nil, err
+	}
+	subagent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		Name:          defaultSubagentName,
+		Description:   defaultSubagentDescription,
+		Instruction:   Prompt,
+		Model:         subagentModel,
+		ToolsConfig:   baseToolsConfig,
+		GenModelInput: genInput,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	subagentTool, ok := adk.NewAgentTool(ctx, subagent).(tool.InvokableTool)
+	if !ok {
+		return nil, errors.New("task subagent tool does not implement invokable interface")
+	}
+	taskManager := NewSubagentTaskManager(map[string]tool.InvokableTool{
+		DefaultSubagentType: subagentTool,
+	})
+
+	leaderToolsConfig, leaderToolsInfo, err := GetToolsConfig(WithTaskExecutor(taskManager))
+	if err != nil {
+		return nil, err
+	}
+	leaderModel, err := llm.WithTools(leaderToolsInfo)
 	if err != nil {
 		return nil, err
 	}
@@ -67,8 +101,8 @@ func NewLeader(ctx context.Context, llm model.ToolCallingChatModel, mem *memory.
 		Name:          "deer flow",
 		Description:   "An agent is able to do anything",
 		Instruction:   Prompt,
-		Model:         llm,
-		ToolsConfig:   config,
+		Model:         leaderModel,
+		ToolsConfig:   leaderToolsConfig,
 		GenModelInput: genInput,
 	})
 	if err != nil {

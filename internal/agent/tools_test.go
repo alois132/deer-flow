@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -91,4 +92,110 @@ func TestResolveSkillScriptPath(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNormalizeTaskArg(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  TaskArg
+		hasErr bool
+	}{
+		{
+			name: "run default mode and subagent",
+			input: TaskArg{
+				Operation:   "",
+				Description: "do it",
+			},
+		},
+		{
+			name: "run async",
+			input: TaskArg{
+				Operation:    "run",
+				Mode:         "async",
+				SubagentType: "general",
+				Description:  "do it",
+			},
+		},
+		{
+			name: "result with task id",
+			input: TaskArg{
+				Operation: "result",
+				TaskID:    "task_123",
+			},
+		},
+		{
+			name: "run missing description",
+			input: TaskArg{
+				Operation: "run",
+			},
+			hasErr: true,
+		},
+		{
+			name: "result missing task id",
+			input: TaskArg{
+				Operation: "result",
+			},
+			hasErr: true,
+		},
+		{
+			name: "invalid operation",
+			input: TaskArg{
+				Operation: "invalid",
+			},
+			hasErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := normalizeTaskArg(tt.input)
+			if tt.hasErr && err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !tt.hasErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestGetToolsWithTaskExecutor(t *testing.T) {
+	tools, err := GetTools(WithTaskExecutor(&mockTaskExecutor{}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	foundTask := false
+	for _, tl := range tools {
+		info, err := tl.Info(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected info error: %v", err)
+		}
+		if info.Name == ToolTask {
+			foundTask = true
+			break
+		}
+	}
+	if !foundTask {
+		t.Fatalf("expected task tool to be registered")
+	}
+}
+
+type mockTaskExecutor struct{}
+
+func (m *mockTaskExecutor) RunSync(ctx context.Context, subagentType, description string) (string, error) {
+	return "ok", nil
+}
+
+func (m *mockTaskExecutor) RunAsync(ctx context.Context, subagentType, description string) (string, error) {
+	return "task_1", nil
+}
+
+func (m *mockTaskExecutor) GetAsyncResult(ctx context.Context, taskID string) (*TaskResult, error) {
+	return &TaskResult{
+		TaskID:       taskID,
+		SubagentType: DefaultSubagentType,
+		Description:  "x",
+		Status:       TaskStatusSucceeded,
+	}, nil
 }

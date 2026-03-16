@@ -31,6 +31,7 @@ DeerFlow 是一个基于 Go 语言开发的开源 AI Super Agent，采用 [Cloud
 - **持久化记忆系统** - 基于 Redis 的智能记忆，自动提取和分类用户偏好、知识和行为模式
 - **安全沙箱执行** - Docker 容器化执行环境，支持自动启动和空闲超时管理
 - **丰富的工具集** - 内置文件操作、命令执行等工具
+- **子代理委派** - Leader 可通过 `task` 工具唤起 subagent，支持同步/异步执行
 - **流式响应** - 实时流式输出，提供流畅的交互体验
 - **线程隔离** - 每个对话线程拥有独立的沙箱环境
 
@@ -135,6 +136,21 @@ DeerFlow 内置以下工具：
 | `read_file` | 读取文件内容，支持行范围 |
 | `write_file` | 写入文件内容 |
 | `str_replace` | 替换文件中的字符串 |
+| `read_skill` | 读取技能的 `SKILL.md` |
+| `read_reference` | 读取技能参考资料 |
+| `use_script` | 执行技能脚本 |
+| `task` | 委派任务给 subagent，支持同步/异步 |
+
+### SubAgent 委派
+
+`task` 工具支持两类操作：
+
+- `operation=run`：执行子任务
+  - `mode=sync`：阻塞等待 subagent 执行完成并返回结果
+  - `mode=async`：立即返回 `task_id`，后台执行
+- `operation=result`：根据 `task_id` 查询异步任务状态和结果
+
+默认 subagent 类型为 `general`。subagent 与 leader 共享同一个 `thread_id` 对应的沙箱资源。
 
 ## 记忆系统
 
@@ -171,6 +187,7 @@ deer-flow/
 │   ├── agent/               # Agent 核心逻辑
 │   │   ├── leader.go        # Leader Agent
 │   │   ├── tools.go         # 工具定义
+│   │   ├── task_manager.go  # SubAgent 任务管理
 │   │   └── memory/          # 记忆服务
 │   └── global/              # 全局配置和实例
 ├── pkg/

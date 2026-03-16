@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/bytedance/sonic"
+
 	"github.com/alois132/deer-flow/internal/global"
 	"github.com/alois132/deer-flow/pkg/log/zlog"
 	"github.com/alois132/deer-flow/pkg/sandbox"
@@ -26,6 +29,7 @@ const (
 	ToolReadSkill  = "read_skill"
 	ToolReadRef    = "read_reference"
 	ToolUseScript  = "use_script"
+	ToolTask       = "task"
 
 	ToolBashDesc       = "Execute a bash command in a Linux environment.\n\n\n    - Use `python` to run Python code.\n    - Use `pip install` to install Python packages.\n\n    Args:\n        description: Explain why you are running this command in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.\n        command: The bash command to execute. Always use absolute paths for files and directories."
 	ToolLsDesc         = "List the contents of a directory up to 2 levels deep in tree format.\n\n    Args:\n        description: Explain why you are listing this directory in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.\n        path: The **absolute** path to the directory to list."
@@ -35,6 +39,7 @@ const (
 	ToolReadSkillDesc  = "Read a skill definition from the skills directory.\n\n    Args:\n        description: Explain why you are reading this skill in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.\n        skill: The skill name (directory name under the skills root)."
 	ToolReadRefDesc    = "Read a reference file for a skill from the skills directory.\n\n    Args:\n        description: Explain why you are reading this reference in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.\n        skill: The skill name (directory name under the skills root).\n        reference: The reference file path relative to the skill's references directory."
 	ToolUseScriptDesc  = "Run a script for a skill using a specified interpreter.\n\n    Args:\n        description: Explain why you are running this script in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.\n        skill: The skill name (directory name under the skills root).\n        script: Script path. If only a filename is provided, it is resolved under the skill's scripts directory. If a relative path with a directory is provided (for example `eval-viewer/generate_review.py`), it is resolved from the skill root.\n        interpreter: Optional interpreter (e.g., bash, sh, python, python3). Defaults to bash.\n        args: Optional arguments passed to the script."
+	ToolTaskDesc       = "Delegate work to a subagent and collect results.\n\n    Args:\n        description: The subtask content for the subagent when operation is `run`.\n        operation: Optional. `run` (default) or `result`.\n        mode: Optional when operation is `run`. `sync` (default) waits for subagent result, `async` returns task_id immediately.\n        subagent_type: Optional subagent type. Default is `general`.\n        task_id: Required when operation is `result`."
 )
 
 type BashArg struct {
@@ -78,8 +83,28 @@ type UseScriptArg struct {
 	Args        string `json:"args"`
 }
 
-func GetToolsConfig() (adk.ToolsConfig, []*schema.ToolInfo, error) {
-	tools, err := GetTools()
+type TaskArg struct {
+	Description  string `json:"description"`
+	Operation    string `json:"operation"`
+	Mode         string `json:"mode"`
+	SubagentType string `json:"subagent_type"`
+	TaskID       string `json:"task_id"`
+}
+
+type toolsOptions struct {
+	taskExecutor TaskExecutor
+}
+
+type ToolsOption func(*toolsOptions)
+
+func WithTaskExecutor(executor TaskExecutor) ToolsOption {
+	return func(opts *toolsOptions) {
+		opts.taskExecutor = executor
+	}
+}
+
+func GetToolsConfig(options ...ToolsOption) (adk.ToolsConfig, []*schema.ToolInfo, error) {
+	tools, err := GetTools(options...)
 	if err != nil {
 		zlog.Errorf("get tools failed:%v", err)
 		return adk.ToolsConfig{}, nil, err
@@ -105,7 +130,9 @@ func GetToolsConfig() (adk.ToolsConfig, []*schema.ToolInfo, error) {
 	return cfg, toolsInfo, nil
 }
 
-func GetTools() (tools []tool.BaseTool, err error) {
+func GetTools(options ...ToolsOption) (tools []tool.BaseTool, err error) {
+	opts := getToolsOptions(options...)
+
 	bashTool, err := utils.InferTool(ToolBash, ToolBashDesc, func(ctx context.Context, input BashArg) (output string, err error) {
 		zlog.CtxInfof(ctx, "bash command:%s", input.Command)
 		sb, err := ensureSandboxInitialized(ctx)
@@ -324,6 +351,55 @@ func GetTools() (tools []tool.BaseTool, err error) {
 	}
 	tools = append(tools, useScriptTool)
 
+	if opts.taskExecutor != nil {
+		taskTool, err := utils.InferTool(ToolTask, ToolTaskDesc, func(ctx context.Context, input TaskArg) (string, error) {
+			normalized, err := normalizeTaskArg(input)
+			if err != nil {
+				return "", err
+			}
+
+			switch normalized.Operation {
+			case TaskOperationRun:
+				if normalized.Mode == TaskModeSync {
+					result, err := opts.taskExecutor.RunSync(ctx, normalized.SubagentType, normalized.Description)
+					if err != nil {
+						return "", err
+					}
+					return sonic.MarshalString(map[string]any{
+						"operation":     TaskOperationRun,
+						"mode":          TaskModeSync,
+						"status":        TaskStatusSucceeded,
+						"subagent_type": normalized.SubagentType,
+						"result":        result,
+					})
+				}
+				taskID, err := opts.taskExecutor.RunAsync(ctx, normalized.SubagentType, normalized.Description)
+				if err != nil {
+					return "", err
+				}
+				return sonic.MarshalString(map[string]any{
+					"operation":     TaskOperationRun,
+					"mode":          TaskModeAsync,
+					"status":        "accepted",
+					"subagent_type": normalized.SubagentType,
+					"task_id":       taskID,
+				})
+			case TaskOperationResult:
+				result, err := opts.taskExecutor.GetAsyncResult(ctx, normalized.TaskID)
+				if err != nil {
+					return "", err
+				}
+				return sonic.MarshalString(result)
+			default:
+				return "", fmt.Errorf("unsupported operation: %s", normalized.Operation)
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
+		tools = append(tools, taskTool)
+	}
+
 	return tools, nil
 }
 
@@ -462,4 +538,49 @@ func allowedInterpreters() []string {
 		return cfg.Sandbox.Skills.AllowedInterpreters
 	}
 	return []string{"bash", "sh", "python", "python3"}
+}
+
+func getToolsOptions(options ...ToolsOption) *toolsOptions {
+	opts := &toolsOptions{}
+	for _, opt := range options {
+		if opt == nil {
+			continue
+		}
+		opt(opts)
+	}
+	return opts
+}
+
+func normalizeTaskArg(input TaskArg) (TaskArg, error) {
+	input.Operation = strings.ToLower(strings.TrimSpace(input.Operation))
+	if input.Operation == "" {
+		input.Operation = TaskOperationRun
+	}
+	switch input.Operation {
+	case TaskOperationRun:
+		input.SubagentType = strings.TrimSpace(input.SubagentType)
+		if input.SubagentType == "" {
+			input.SubagentType = DefaultSubagentType
+		}
+		input.Description = strings.TrimSpace(input.Description)
+		if input.Description == "" {
+			return input, fmt.Errorf("description is required when operation=run")
+		}
+		input.Mode = strings.ToLower(strings.TrimSpace(input.Mode))
+		if input.Mode == "" {
+			input.Mode = TaskModeSync
+		}
+		if input.Mode != TaskModeSync && input.Mode != TaskModeAsync {
+			return input, fmt.Errorf("mode must be one of [%s, %s]", TaskModeSync, TaskModeAsync)
+		}
+		return input, nil
+	case TaskOperationResult:
+		input.TaskID = strings.TrimSpace(input.TaskID)
+		if input.TaskID == "" {
+			return input, fmt.Errorf("task_id is required when operation=result")
+		}
+		return input, nil
+	default:
+		return input, fmt.Errorf("operation must be one of [%s, %s]", TaskOperationRun, TaskOperationResult)
+	}
 }
